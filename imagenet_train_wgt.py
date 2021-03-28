@@ -1,0 +1,109 @@
+"""Script to train imagenet model and minimize any bitlength criteria"""
+from fastai.script import *
+from fastai.vision import *
+from fastai.callbacks import *
+from fastai.distributed import *
+from fastai.callbacks.tracker import *
+torch.backends.cudnn.benchmark = True
+import time
+from quant_nets import *
+from imagenet_quant_alexnet import *
+from imagenet_quant_resnets import *
+from imagenet_resnets import *
+from imagenet_mobilenetv2 import *
+from imagenet_resnext import *
+from mnasnet import *
+from imagenet_quant_mobilenetv2 import *
+from mobilenet_v1 import *
+from quant_mobilenet_v1 import *
+
+
+def get_data(path, size, bs, workers):
+    tfms = ([
+        flip_lr(p=0.5),
+        brightness(change=(0.4,0.6)),
+        contrast(scale=(0.7,1.3))
+    ], [])
+    train = ImageList.from_csv(path/'train', 'train.csv')#.use_partial_data(0.001)
+    valid = ImageList.from_csv(path/'val_org', 'valid.csv')#.use_partial_data()
+    lls = ItemLists(path, train, valid).label_from_df().transform(
+            tfms, size=size).presize(size, scale=(0.35, 1.0))
+    return lls.databunch(bs=bs, num_workers=workers).normalize(imagenet_stats)
+
+@call_parse
+def main( gpu:Param("GPU to run on", str)=None ):
+#def main():
+    """Distributed training of Imagenet. Fastest speed is if you run with: python -m fastai.launch"""
+    path = Path('/home/datasets/')
+    """Select learning parameters"""
+    #tot_epochs,size,bs,lr = 90,224,64,0.1
+    #tot_epochs,size,bs,lr = 180,224,64,0.1
+    #tot_epochs,size,bs,lr = 180,224,64,0.1
+    tot_epochs,size,bs,lr = 180,224,128,0.01
+    #tot_epochs,size,bs,lr = 90,224,256,0.01
+    dirname = 'ILSVRC2012_full'
+    #torch.
+    #gpu = setup_distrib(gpu)
+    #if gpu is None: bs *= torch.cuda.device_count()
+    #bs=2
+    n_gpus = 1#num_distrib() or 1
+    #n_gpus = 2#num_distrib() or 1
+    workers = min(12, num_cpus()//n_gpus)
+    data = get_data(path/dirname, size, bs, workers)
+
+    opt_func = partial(optim.SGD, momentum=0.9)
+	
+    """Select model"""
+    #model=models.alexnet()
+    #model=resnext101()
+    model=quant_alexnet()
+    #model=(quant_resnet18())
+    #model=resnet18()
+    #model=mobilenet_v2()
+    #model=MnasNet()
+    #model=MobileNet()
+    #model=Quant_MobileNetV2()
+    #model=Quant_MobileNet()
+    #loss_func = LabelSmoothingCrossEntropy()
+	
+    """Select weights for the loss function"""
+    #wgts=[] #AlexNet Mem
+    #acts=[]# AlexNet Mem
+
+    #wgts=[] #AlexNet MACs
+    #acts=[] #AlexNet MACs
+
+    #wgts=[] #ResNet Mem
+    #acts=[] #ResNet Mem
+    #wgts=[] #ResNet MACs
+    #acts=[] #ResNet MACs
+    #acts = [x * 128 for x in acts]
+	
+	"""Select loss function"""
+    loss_func = Quant_Loss_Weighted(model,wgts=wgts,acts=acts,reg_strength=0.01)
+
+    #loss_func = Quant_Loss(model, 0.01)
+    learn = Learner(data, model, metrics=[accuracy,top_k_accuracy], wd=1e-5,
+        opt_func=opt_func, bn_wd=False, true_wd=False,
+        loss_func = loss_func).mixup(alpha=0.2)
+    learn.callback_fns += [
+        partial(TrackEpochCallback),
+        partial(SaveModelCallback, every='epoch', name='fix')
+    ]
+    learn.split(lambda m: (children(m)[-2],))
+    #if gpu is None: learn.model = nn.DataParallel(learn.model)
+    #else:           learn.to_distributed(gpu)
+    #learn.to_fp16(dynamic=True)
+    torch.cuda.set_device(0)
+    # Using bs 256 on single GPU as baseline, scale the LR linearly
+    tot_bs = bs*n_gpus
+    bs_rat = tot_bs/256
+    lr *= bs_rat
+    print(lr)
+    print_model(model)
+	
+    """Train"""
+    learn.fit_one_cycle(tot_epochs, lr, div_factor=10, moms=(0.9,0.9))
+    learn.save('done')
+    print_model(model)
+
