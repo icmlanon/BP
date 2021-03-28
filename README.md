@@ -3,7 +3,7 @@ Dependencies:
 -	fastai		1.0.40
 
 Example how to run on CIFAR10:
-python cifar_train.py --model bp_resnet18 --loss BP --r 1.0 --epochs 300
+python cifar_train.py --model bp_resnet18 --gpu 0 --batch 64 --loss BP --r 1.0 --epochs 300
 
 Bitlengths are printed as: [w1, a1, w2, a2, w3, a3...]
 
